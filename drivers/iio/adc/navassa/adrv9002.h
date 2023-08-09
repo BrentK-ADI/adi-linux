@@ -88,7 +88,7 @@ enum adrv9002_rx_ext_info {
 	RX_NCO_FREQUENCY,
 	RX_ADC_SWITCH,
 	RX_BBDC,
-	RX_BBDC_LOOP_GAIN,
+	RX_BBDC_LOOP_GAIN
 };
 
 enum adrv9002_tx_ext_info {
@@ -218,6 +218,9 @@ struct adrv9002_rf_phy {
 	struct spi_device		*spi;
 	struct iio_dev			*indio_dev;
 	struct gpio_desc		*reset_gpio;
+	struct gpio_desc		*mcs_gpio;
+	bool				mcs_avail;
+	bool				mcs_complete;
 	struct gpio_desc		*ssi_sync;
 	/* Protect against concurrent accesses to the device */
 	struct mutex			lock;
@@ -274,7 +277,7 @@ int adrv9002_intf_change_delay(const struct adrv9002_rf_phy *phy, const int chan
 /* phy lock must be held before entering the API */
 int adrv9002_channel_to_state(const struct adrv9002_rf_phy *phy, struct adrv9002_chan *chann,
 			      const adi_adrv9001_ChannelState_e state, const bool cache_state);
-int adrv9002_init(struct adrv9002_rf_phy *phy, struct adi_adrv9001_Init *profile);
+int adrv9002_init(struct adrv9002_rf_phy *phy, struct adi_adrv9001_Init *profile, const bool hw_reset);
 int __adrv9002_dev_err(const struct adrv9002_rf_phy *phy, const char *function, const int line);
 static inline void adrv9002_sync_gpio_toggle(const struct adrv9002_rf_phy *phy)
 {
@@ -285,6 +288,17 @@ static inline void adrv9002_sync_gpio_toggle(const struct adrv9002_rf_phy *phy)
 		gpiod_set_value_cansleep(phy->ssi_sync, 0);
 	}
 }
+
+static inline void adrv9002_mcs_gpio_toggle(const struct adrv9002_rf_phy *phy, u32 delay_us)
+{
+	if (phy->mcs_avail) {
+		/* toggle ssi sync gpio */
+		gpiod_set_value_cansleep(phy->mcs_gpio, 1);
+		udelay(delay_us);
+		gpiod_set_value_cansleep(phy->mcs_gpio, 0);
+	}
+}
+
 
 /* AXI core API's */
 int adrv9002_register_axi_converter(struct adrv9002_rf_phy *phy);

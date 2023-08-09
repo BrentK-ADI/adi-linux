@@ -131,7 +131,12 @@ static __maybe_unused int32_t adi_adrv9001_Mcs_RfPllPhaseDifference_Get(adi_adrv
 
     *phaseDifference_degrees = readData > TWOS_COMP_MID ? readData - TWOS_COMP_MAX : readData;
 #ifdef __KERNEL__
-    *phaseDifference_degrees = DIV_ROUND_CLOSEST(*phaseDifference_degrees, ADRV9001_CLK_PLL_MODULUS) * 360;
+    /* BJK - 8/8/23 - * 360 was previously on the outside of the
+       DIV_ROUND_CLOSEST, always resulting in either 0 or 360 of phase
+       difference. Need to multiple the source value by 360 first,
+       then multiply
+    */
+    *phaseDifference_degrees = DIV_ROUND_CLOSEST(*phaseDifference_degrees  * 360, ADRV9001_CLK_PLL_MODULUS);
 #else
     *phaseDifference_degrees = *phaseDifference_degrees / (float)ADRV9001_CLK_PLL_MODULUS * 360.0f;
 #endif

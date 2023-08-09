@@ -219,4 +219,5 @@ dgpio_0		32	110
 
 &adc0_adrv9002 {
 	reset-gpios = <&gpio 124 GPIO_ACTIVE_LOW>;
+	mcs-gpios = <&gpio 131 GPIO_ACTIVE_HIGH>;
 };

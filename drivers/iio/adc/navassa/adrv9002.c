@@ -38,6 +38,8 @@
 #include "adi_adrv9001_fh_types.h"
 #include "adi_adrv9001_gpio.h"
 #include "adi_adrv9001_gpio_types.h"
+#include "adi_adrv9001_mcs.h"
+#include "adi_adrv9001_mcs_types.h"
 #include "adi_adrv9001_orx.h"
 #include "adi_adrv9001_powermanagement.h"
 #include "adi_adrv9001_powermanagement_types.h"
@@ -533,7 +535,8 @@ enum {
 	ADRV9002_HOP_1_TABLE_SEL,
 	ADRV9002_HOP_2_TABLE_SEL,
 	ADRV9002_HOP_1_TRIGGER,
-	ADRV9002_HOP_2_TRIGGER
+	ADRV9002_HOP_2_TRIGGER,
+	ADRV9002_MCS_COMPLETE,
 };
 
 static const char * const adrv9002_hop_table[ADRV9002_FH_TABLES_NR + 1] = {
@@ -583,6 +586,8 @@ static ssize_t adrv9002_attr_show(struct device *dev, struct device_attribute *a
 	case ADRV9002_HOP_1_TABLE_SEL:
 	case ADRV9002_HOP_2_TABLE_SEL:
 		return adrv9002_fh_table_show(phy, buf, iio_attr->address);
+	case ADRV9002_MCS_COMPLETE:
+		return sysfs_emit(buf, "%d\n", phy->mcs_complete);
 	default:
 		return -EINVAL;
 	}
@@ -690,6 +695,18 @@ static ssize_t adrv9002_phy_lo_do_write(struct adrv9002_rf_phy *phy, struct adrv
 		goto out_unlock;
 
 	lo_freq.carrierFrequency_Hz = freq;
+
+	/* There looks to be a bug in the ADRV9002's Firmware when MCS is enabled
+	   and sync is completed in that loGenOptimization is set to '2', which
+	   is an invalid value. Re-assign it here to make the bounds checks pass
+	   Phase noise is only applicable < 1GHz, so use that as default, and power
+	   savings everywhere else.
+	*/
+	if (freq < 1000000000ULL)
+		lo_freq.loGenOptimization = ADI_ADRV9001_LO_GEN_OPTIMIZATION_PHASE_NOISE;
+	else
+		lo_freq.loGenOptimization = ADI_ADRV9001_LO_GEN_OPTIMIZATION_POWER_CONSUMPTION;
+
 	ret = adrv9002_channel_to_state(phy, c, ADI_ADRV9001_CHANNEL_CALIBRATED, true);
 	if (ret)
 		goto out_unlock;
@@ -2112,6 +2129,8 @@ static IIO_DEVICE_ATTR(frequency_hopping_hop1_signal_trigger, 0200, NULL, adrv90
 		       ADRV9002_HOP_1_TRIGGER);
 static IIO_DEVICE_ATTR(frequency_hopping_hop2_signal_trigger, 0200, NULL, adrv9002_attr_store,
 		       ADRV9002_HOP_2_TRIGGER);
+static IIO_DEVICE_ATTR(mcs_complete, 0400, adrv9002_attr_show, NULL,
+		       ADRV9002_MCS_COMPLETE);
 
 static struct attribute *adrv9002_sysfs_attrs[] = {
 	&iio_const_attr_frequency_hopping_hop_table_select_available.dev_attr.attr,
@@ -2119,6 +2138,7 @@ static struct attribute *adrv9002_sysfs_attrs[] = {
 	&iio_dev_attr_frequency_hopping_hop2_table_select.dev_attr.attr,
 	&iio_dev_attr_frequency_hopping_hop1_signal_trigger.dev_attr.attr,
 	&iio_dev_attr_frequency_hopping_hop2_signal_trigger.dev_attr.attr,
+	&iio_dev_attr_mcs_complete.dev_attr.attr,
 	NULL
 };
 
@@ -2374,6 +2394,128 @@ static void adrv9002_compute_init_cals(struct adrv9002_rf_phy *phy)
 	dev_dbg(&phy->spi->dev, "pos: %u, Chan1:%X, Chan2:%X", pos,
 		phy->init_cals.chanInitCalMask[0],
 		phy->init_cals.chanInitCalMask[1]);
+}
+
+struct adrv9002_mcs_pulse_cfg {
+	u32				after_pulse_wait_us;
+	adi_adrv9001_ArmSystemStates_e	exp_radio_sys_state;
+	adi_adrv9001_ArmMcsStates_e	exp_radio_mcs_state;
+	adi_adrv9001_McsSwStatus_e	exp_mcs_sw_status;
+};
+
+#define ADRV9002_NUM_MCS_PULSES		6
+#define ADRV9002_PULSE_TIME_US		2
+#define ADRV9002_MCS_MAX_RETRY		5
+
+static const struct adrv9002_mcs_pulse_cfg adrv9002_mcs_pulses[ADRV9002_NUM_MCS_PULSES] = {
+	{ 5, 	ADI_ADRV9001_ARM_SYSTEM_MCS, ADI_ADRV9001_ARMMCSSTATES_READY,
+		ADI_ADRV9001_MCSSWSTATUS_READY},
+	{ 5, 	ADI_ADRV9001_ARM_SYSTEM_MCS, ADI_ADRV9001_ARMMCSSTATES_TRANSITION,
+		ADI_ADRV9001_MCSSWSTATUS_PULSE2_RECEIVED},
+	{ 5, 	ADI_ADRV9001_ARM_SYSTEM_MCS, ADI_ADRV9001_ARMMCSSTATES_TRANSITION,
+		ADI_ADRV9001_MCSSWSTATUS_PULSE3_RECEIVED},
+	{ 105, 	ADI_ADRV9001_ARM_SYSTEM_MCS, ADI_ADRV9001_ARMMCSSTATES_TRANSITION,
+		ADI_ADRV9001_MCSSWSTATUS_PULSE4_RECEIVED},
+	{ 105, 	ADI_ADRV9001_ARM_SYSTEM_MCS, ADI_ADRV9001_ARMMCSSTATES_TRANSITION,
+		ADI_ADRV9001_MCSSWSTATUS_DEVICE_SWITCHED_TO_HSCLK},
+	{ 5, 	ADI_ADRV9001_ARM_SYSTEM_MCS, ADI_ADRV9001_ARMMCSSTATES_DONE,
+		ADI_ADRV9001_MCSSWSTATUS_DEVICE_SWITCHED_TO_HSCLK},
+};
+
+static int adrv9002_mcs_run(struct adrv9002_rf_phy *phy)
+{
+	int ret, i, retry;
+	bool pulse_valid;
+	adi_adrv9001_DeviceSysConfig_t *sys = &phy->curr_profile->sysConfig;
+	adi_adrv9001_RadioState_t radio_state;
+	adi_adrv9001_McsSwStatus_e sw_status;
+
+	/* MCS not enabled, just return back. Don't update complete flag */
+	if (sys->mcsMode == ADI_ADRV9001_MCSMODE_DISABLED)
+		return 0;
+
+	/* If the GPIO is not available, just give a warning and keep running */
+	if (!phy->mcs_avail) {
+		dev_warn(&phy->spi->dev, "MCS Mode Enabled, but MCS GPIO Not Defined. Skipping Synchronization");
+		return 0;
+	}
+
+	/* Check Correct Radio Mode First*/
+	ret = api_call(phy, adi_adrv9001_Radio_State_Get, &radio_state);
+	if ((ret) || (radio_state.systemState != ADI_ADRV9001_ARM_SYSTEM_NORMALMODE)) {
+		dev_err(&phy->spi->dev, "Radio state no normal prior to MCS");
+		return -EBUSY;
+	}
+
+	/* Move all channels to MCS Ready */
+	ret = api_call(phy, adi_adrv9001_Radio_ToMcsReady );
+	if (ret) {
+		dev_err(&phy->spi->dev, "Failed to enter MCS Ready");
+		return ret;
+	}
+
+	/* Check Correct Radio Mode and MCS Mode*/
+	ret = api_call(phy, adi_adrv9001_Radio_State_Get, &radio_state);
+	if ((ret) || (radio_state.systemState != ADI_ADRV9001_ARM_SYSTEM_MCS) ||
+			(radio_state.mcsState != ADI_ADRV9001_ARMMCSSTATES_READY)) {
+		dev_err(&phy->spi->dev, "MCS not ready in radio");
+		return -EBUSY;
+	}
+
+
+	/* Check the MCS SW Status for Ready */
+	ret = api_call(phy, adi_adrv9001_Mcs_SwStatus_Get, &sw_status);
+	if ((ret) || (sw_status != ADI_ADRV9001_MCSSWSTATUS_READY)) {
+		dev_err(&phy->spi->dev, "MCS SW status not ready");
+		return -EBUSY;
+	}
+
+	for(i = 0; i < ADRV9002_NUM_MCS_PULSES; i++)
+	{
+		retry = 0;
+		pulse_valid = false;
+
+		while ((retry < ADRV9002_MCS_MAX_RETRY) && (!pulse_valid)) {
+			adrv9002_mcs_gpio_toggle(phy, ADRV9002_PULSE_TIME_US);
+			udelay(adrv9002_mcs_pulses[i].after_pulse_wait_us);
+
+			/* Check Correct Radio Mode and MCS Mode*/
+			ret = api_call(phy, adi_adrv9001_Radio_State_Get, &radio_state);
+			if (ret) {
+				dev_err(&phy->spi->dev, "Failed to read radio state for pulse %d", i);
+				return -EBUSY;
+			}
+
+			/* Check Correct Radio Mode and MCS Mode*/
+			ret = api_call(phy, adi_adrv9001_Mcs_SwStatus_Get, &sw_status);
+			if (ret) {
+				dev_err(&phy->spi->dev, "Failed to read MCS Sw status for pulse %d", i);
+				return -EBUSY;
+			}
+
+			if ((radio_state.systemState == adrv9002_mcs_pulses[i].exp_radio_sys_state) &&
+					(radio_state.mcsState == adrv9002_mcs_pulses[i].exp_radio_mcs_state) &&
+					(sw_status == adrv9002_mcs_pulses[i].exp_mcs_sw_status))
+				pulse_valid = true;
+
+			retry++;
+		}
+
+		if (!pulse_valid) {
+			dev_err(&phy->spi->dev, "MCS SW status failed for pulse %d", i);
+			return -EBUSY;
+		}
+
+		if (retry > 1)
+			dev_info(&phy->spi->dev, "MCS Pulse %d took %d attempts", i, retry);
+	}
+
+	/*  Update the mcs_complete flag. This is a shortcut to notify the user MCS
+		was successful. The MCS status that is exposed in debugfs provides too
+		much information to parse for a basic status. */
+	phy->mcs_complete = true;
+
+	return 0;
 }
 
 static int adrv9002_ext_lo_validate(struct adrv9002_rf_phy *phy, int idx, bool tx)
@@ -2842,6 +2984,12 @@ static int adrv9002_setup(struct adrv9002_rf_phy *phy)
 	if (ret)
 		return ret;
 
+	//Default MCS complete to false. Value will get set in mcs_run if success
+	phy->mcs_complete = false;
+	ret = adrv9002_mcs_run(phy);
+	if (ret)
+		return ret;
+
 	ret = adrv9001_rx_path_config(phy, init_state);
 	if (ret)
 		return ret;
@@ -3210,7 +3358,9 @@ static void adrv9002_fill_profile_read(struct adrv9002_rf_phy *phy)
 				     ssi[phy->ssi_type]);
 }
 
-int adrv9002_init(struct adrv9002_rf_phy *phy, struct adi_adrv9001_Init *profile)
+
+
+int adrv9002_init(struct adrv9002_rf_phy *phy, struct adi_adrv9001_Init *profile, const bool hw_reset)
 {
 	int ret, c;
 	struct adrv9002_chan *chan;
@@ -3229,6 +3379,12 @@ int adrv9002_init(struct adrv9002_rf_phy *phy, struct adi_adrv9001_Init *profile
 			break;
 
 		adrv9002_axi_interface_enable(phy, chan->idx, chan->port == ADI_TX, false);
+	}
+
+	if (hw_reset) {
+		ret = api_call(phy, adi_adrv9001_Shutdown);
+		if (ret)
+			dev_warn(&phy->spi->dev, "Error performing shutdown. Continuing anyways");
 	}
 
 	phy->curr_profile = profile;
@@ -3323,7 +3479,7 @@ static ssize_t adrv9002_profile_bin_write(struct file *filp, struct kobject *kob
 	if (ret)
 		goto out;
 
-	ret = adrv9002_init(phy, &phy->profile);
+	ret = adrv9002_init(phy, &phy->profile, true);
 out:
 	mutex_unlock(&phy->lock);
 
@@ -3560,7 +3716,7 @@ int adrv9002_post_init(struct adrv9002_rf_phy *phy)
 	if (ret)
 		return ret;
 
-	ret = adrv9002_init(phy, &phy->profile);
+	ret = adrv9002_init(phy, &phy->profile, false);
 	if (ret)
 		return ret;
 
@@ -3777,6 +3933,15 @@ static int adrv9002_probe(struct spi_device *spi)
 		if (IS_ERR(phy->ssi_sync))
 			return PTR_ERR(phy->ssi_sync);
 	}
+
+	/* Get the MCS GPIO. Don't error check here since it's use is dependent
+	   on the MCS mode in the loaded profile. Set the mcs_avail flag
+	   based on the availability of the GPIO  */
+	phy->mcs_gpio = devm_gpiod_get(&spi->dev, "mcs", GPIOD_OUT_LOW);
+	if (IS_ERR(phy->mcs_gpio))
+		phy->mcs_avail = false;
+	else
+		phy->mcs_avail = true;
 
 	return adrv9002_register_axi_converter(phy);
 }

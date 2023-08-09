@@ -18,6 +18,8 @@
 #include "adi_adrv9001_fh_types.h"
 #include "adi_adrv9001_gpio.h"
 #include "adi_adrv9001_gpio_types.h"
+#include "adi_adrv9001_mcs.h"
+#include "adi_adrv9001_mcs_types.h"
 #include "adi_adrv9001_radio.h"
 #include "adi_adrv9001_rx.h"
 #include "adi_adrv9001_rxSettings_types.h"
@@ -386,6 +388,96 @@ error:
 }
 DEFINE_SHOW_ATTRIBUTE(adrv9002_pll_status);
 
+#define adrv9002_mcs_compl_seq_printf(title, field) \
+	seq_printf(s, "%-30s: %s\n", title, field ? "Complete" : "Not Complete")
+
+static int adrv9002_mcs_status_show(struct seq_file *s, void *ignored)
+{
+	struct adrv9002_rf_phy *phy = s->private;
+	adi_adrv9001_McsStatus_t mcs_status;
+	int ret;
+
+	mutex_lock(&phy->lock);
+	ret = api_call(phy, adi_adrv9001_Mcs_Status_Get, &mcs_status);
+	mutex_unlock(&phy->lock);
+
+	if (ret)
+		return ret;
+
+	/* RF1 PLL*/
+	adrv9002_mcs_compl_seq_printf("RF1PLL-JESD Sync",
+		mcs_status.rf1PllSyncStatus.jesdSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF1PLL-Dig Clk Sync",
+		mcs_status.rf1PllSyncStatus.digitalClocksSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF1PLL-Clk Gen Div Sync",
+		mcs_status.rf1PllSyncStatus.clockGenDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF1PLL-Clk PLL SDM Div Sync",
+		mcs_status.rf1PllSyncStatus.sdmClockDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF1PLL-Ref Clk Div Sync",
+		mcs_status.rf1PllSyncStatus.referenceClockDividerSyncComplete);
+
+	/* RF2 PLL*/
+	adrv9002_mcs_compl_seq_printf("RF2PLL-JESD Sync",
+		mcs_status.rf2PllSyncStatus.jesdSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF2PLL-Dig Clk Sync",
+		mcs_status.rf2PllSyncStatus.digitalClocksSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF2PLL-Clk Gen Div Sync",
+		mcs_status.rf2PllSyncStatus.clockGenDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF2PLL-Clk PLL SDM Div Sync",
+		mcs_status.rf2PllSyncStatus.sdmClockDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RF2PLL-Ref Clk Div Sync",
+		mcs_status.rf2PllSyncStatus.referenceClockDividerSyncComplete);
+
+	/* CLK PLL*/
+	adrv9002_mcs_compl_seq_printf("CLKPLL-JESD Sync",
+		mcs_status.clkPllSyncStatus.jesdSyncComplete);
+	adrv9002_mcs_compl_seq_printf("CLKPLL-Dig Clk Sync",
+		mcs_status.clkPllSyncStatus.digitalClocksSyncComplete);
+	adrv9002_mcs_compl_seq_printf("CLKPLL-Clk Gen Div Sync",
+		mcs_status.clkPllSyncStatus.clockGenDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("CLKPLL-Clk PLL SDM Div Sync",
+		mcs_status.clkPllSyncStatus.sdmClockDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("CLKPLL-Ref Clk Div Sync",
+		mcs_status.clkPllSyncStatus.referenceClockDividerSyncComplete);
+
+
+	/* CLK LP PLL*/
+	adrv9002_mcs_compl_seq_printf("LPCLKPLL-JESD Sync",
+		mcs_status.clkPllLpSyncStatus.jesdSyncComplete);
+	adrv9002_mcs_compl_seq_printf("LPCLKPLL-Dig Clk Sync",
+		mcs_status.clkPllLpSyncStatus.digitalClocksSyncComplete);
+	adrv9002_mcs_compl_seq_printf("LPCLKPLL-Clk Gen Div Sync",
+		mcs_status.clkPllLpSyncStatus.clockGenDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("LPCLKPLL-Clk PLL SDM Div Sync",
+		mcs_status.clkPllLpSyncStatus.sdmClockDividerSyncComplete);
+	adrv9002_mcs_compl_seq_printf("LPCLKPLL-Ref Clk Div Sync",
+		mcs_status.clkPllLpSyncStatus.referenceClockDividerSyncComplete);
+
+	/* RX 1 LVDS */
+	adrv9002_mcs_compl_seq_printf("RX1LVDS-First Sync",
+		mcs_status.rx1LvdsSyncStatus.lvdsFirstSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RX1LVDS-Second Sync",
+		mcs_status.rx1LvdsSyncStatus.lvdsSecondSyncComplete);
+
+	/* RX 2 LVDS */
+	adrv9002_mcs_compl_seq_printf("RX2LVDS-First Sync",
+		mcs_status.rx2LvdsSyncStatus.lvdsFirstSyncComplete);
+	adrv9002_mcs_compl_seq_printf("RX2LVDS-Second Sync",
+		mcs_status.rx2LvdsSyncStatus.lvdsSecondSyncComplete);
+
+
+	adrv9002_mcs_compl_seq_printf("Digital-First Sync",
+		mcs_status.firstDigitalSyncComplete);
+	adrv9002_mcs_compl_seq_printf("Digital-Second Sync",
+		mcs_status.firstDigitalSyncComplete);
+
+	seq_printf(s, "RFPLL1 Phase: %d Deg\n", mcs_status.rfPll1Phase_degrees);
+	seq_printf(s, "RFPLL2 Phase: %d Deg\n", mcs_status.rfPll2Phase_degrees);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(adrv9002_mcs_status);
+
 static const char *const adrv9002_ssi_test_mode_data_avail[] = {
 	"TESTMODE_DATA_NORMAL",
 	"TESTMODE_DATA_FIXED_PATTERN",
@@ -599,7 +691,7 @@ static int adrv9002_init_set(void *arg, const u64 val)
 		return -EINVAL;
 
 	mutex_lock(&phy->lock);
-	ret = adrv9002_init(phy, phy->curr_profile);
+	ret = adrv9002_init(phy, phy->curr_profile, true);
 	mutex_unlock(&phy->lock);
 
 	return ret;
@@ -1281,6 +1373,9 @@ void adrv9002_debugfs_create(struct adrv9002_rf_phy *phy, struct dentry *d)
 
 	debugfs_create_file("pll_status", 0400, d, phy,
 			    &adrv9002_pll_status_fops);
+
+	debugfs_create_file("mcs_status", 0400, d, phy,
+			    &adrv9002_mcs_status_fops);
 
 	debugfs_create_file("rx_ssi_test_mode_data_available", 0400, d,
 			    &rx_ssi_avail_mask, &adrv9002_ssi_mode_avail_fops);
