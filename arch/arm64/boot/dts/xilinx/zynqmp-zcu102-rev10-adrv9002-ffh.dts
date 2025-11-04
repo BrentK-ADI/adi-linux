@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Analog Devices ADRV9002
+ *
+ * hdl_project: <adrv9001/zcu102>
+ * board_revision: <>
+ *
+ * Copyright (C) 2025 Analog Devices Inc.
+ */
+#include "zynqmp-zcu102-rev10-adrv9002.dts"
+
+&{/fpga_axi/} {
+		/* Add the TDD node that generates the timing signals */
+		ffh_tdd: ffh_tdd@80000000 {
+			compatible = "adi,axi-tdd";
+			reg = <0x80000000 0x10000>;
+			clocks = <&zynqmp_clk 71>, <&zynqmp_clk 71>;
+			clock-names = "s_axi_aclk", "intf_clk";
+			label = "axi-ffh-tdd";
+		};
+};
+
+&adc0_adrv9002 {
+	/* Frequency hopping properties */
+	adi,frequency-hopping {
+		adi,fh-mode = <ADRV9001_FH_LO_MUX_REALTIME_PROCESS>;
+		adi,fh_table_control = <ADRV9002_FH_TABLE_CTRL_AUTO_PING_PONG>;
+
+		/* Tailor these to the freq span of the application to improve cals */
+		adi,fh-min-frequency-hz = /bits/ 64 <1960000000>;
+		adi,fh-max-frequency-hz = /bits/ 64 <2030000000>;
+		adi,fh-min-frame-us = <25>;
+
+		adi,fh-hop-signal-1 {
+			adi,fh-hop-pin = <ADRV9002_DGPIO_0>; //Hard coded in the FPGA
+			adi,fh-hop-tx-ports = <ADRV9002_TX_1 ADRV9002_TX_2>;
+		};
+
+		/* Delete the Hop2 node since this is not dual hop */
+		/delete-node/ adi,fh-hop-signal-2;
+	};
+
+	/* Delete the existing GPIO assignments since they are used for
+	   ORX and conflict with the pin assigned for Hop */
+	adi,gpios {
+		/delete-node/ gpio@0;
+		/delete-node/ gpio@1;
+	};
+};
+
