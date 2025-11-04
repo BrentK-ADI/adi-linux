@@ -3545,14 +3545,24 @@ static int adrv9002_radio_init(struct adrv9002_rf_phy *phy)
 			   phy->curr_profile->rx.rxInitChannelMask) & 0xFF;
 	struct adi_adrv9001_PllLoopFilterCfg pll_loop_filter = {
 		.effectiveLoopBandwidth_kHz = 0,
-		.loopBandwidth_kHz = 300,
+		.loopBandwidth_kHz = 1200, /* Default was 300. 1200 for FFH */
 		.phaseMargin_degrees = 60,
 		.powerScale = 5
 	};
+	struct adi_adrv9001_PllConfig pll_config = {
+		.pllCalibration = ADI_ADRV9001_PLL_CALIBRATION_FAST,
+		.pllPower = ADI_ADRV9001_PLL_POWER_HIGH
+	};
+
 	struct adi_adrv9001_Carrier carrier = {0};
 
 	ret = api_call(phy, adi_adrv9001_Radio_PllLoopFilter_Set,
 		       ADI_ADRV9001_PLL_LO1, &pll_loop_filter);
+	if (ret)
+		return ret;
+
+	ret = api_call(phy, adi_adrv9001_Radio_Pll_Configure,
+		       ADI_ADRV9001_PLL_LO1, &pll_config);
 	if (ret)
 		return ret;
 
@@ -3561,6 +3571,13 @@ static int adrv9002_radio_init(struct adrv9002_rf_phy *phy)
 	if (ret)
 		return ret;
 
+	ret = api_call(phy, adi_adrv9001_Radio_Pll_Configure,
+		       ADI_ADRV9001_PLL_LO2, &pll_config);
+	if (ret)
+		return ret;
+
+	/* Put the Loop BW back to 300kHz for Aux */
+	pll_loop_filter.loopBandwidth_kHz = 300;
 	ret = api_call(phy, adi_adrv9001_Radio_PllLoopFilter_Set,
 		       ADI_ADRV9001_PLL_AUX, &pll_loop_filter);
 	if (ret)
