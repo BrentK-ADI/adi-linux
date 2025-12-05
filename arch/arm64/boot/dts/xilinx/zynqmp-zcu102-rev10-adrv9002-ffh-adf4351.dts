@@ -20,7 +20,39 @@
 		};
 };
 
+/delete-node/ &adrv9002_clkin;
+
+/{
+	ref25: ref25 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <25000000>;
+	};
+};
+
+
+&spi1 {
+    status = "okay";
+    adf4351: adf4351@0 {
+        compatible = "adi,adf4351";
+        reg = <0>;
+        spi-max-frequency = <10000000>;
+        clocks = <&ref25 0>;
+        clock-names = "clkin";
+        adi,channel-spacing = <10000>;
+        adi,power-up-frequency = <38400000>;
+        adi,phase-detector-polarity-positive-enable;
+        adi,charge-pump-current = <2500>;
+        adi,output-power = <3>;
+        adi,mute-till-lock-enable;
+			  clock-output-names = "adrv9002_ext_refclk";
+			  #clock-cells = <0>;        
+    };
+};
+
 &adc0_adrv9002 {
+  	clocks = <&adf4351>;
+	clock-names = "adrv9002_ext_refclk";
 	/* Frequency hopping properties */
 	adi,frequency-hopping {
 		adi,fh-mode = <ADRV9001_FH_LO_MUX_REALTIME_PROCESS>;

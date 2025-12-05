@@ -399,6 +399,13 @@ static int adf4350_clk_set_rate(struct clk_hw *hw,
 	return adf4350_set_freq(st, rate);
 }
 
+static int adf4350_clk_determine_rate(struct clk_hw *hw,
+				struct clk_rate_request *req)
+{
+	//Dummy for now
+	return 0;
+}
+
 static int adf4350_clk_prepare(struct clk_hw *hw)
 {
 	struct adf4350_state *st = to_adf4350_state(hw);
@@ -425,6 +432,7 @@ static int adf4350_clk_is_enabled(struct clk_hw *hw)
 }
 
 static const struct clk_ops adf4350_clk_ops = {
+	.determine_rate = adf4350_clk_determine_rate,
 	.recalc_rate = adf4350_clk_recalc_rate,
 	.set_rate = adf4350_clk_set_rate,
 	.prepare = adf4350_clk_prepare,
