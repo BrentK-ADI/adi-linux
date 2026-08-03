@@ -41,6 +41,26 @@ properties:
     description: Reference to the GPIO connected to the XCLR pin, if any.
     maxItems: 1
 
+  sony,hot-attach:
+    type: boolean
+    description:
+      When present, indicates the sensor is already configured and streaming
+      by an external controller. The driver will skip power-on sequencing,
+      register initialization, and standby transitions. Useful for GMSL or
+      MIPI-duplicated scenarios where another processor has already
+      initialized the sensor.
+
+  sony,default-pixel-format:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [10, 12]
+    default: 12
+    description:
+      Default pixel bit depth for the media bus format. When set to 10,
+      the driver initializes with MEDIA_BUS_FMT_SRGGB10_1X10 (RAW10).
+      When set to 12 or absent, defaults to MEDIA_BUS_FMT_SRGGB12_1X12
+      (RAW12). Primarily useful in hot-attach mode where the format must
+      match what the external controller configured.
+
   port:
     additionalProperties: false
     $ref: /schemas/graph.yaml#/$defs/port-base

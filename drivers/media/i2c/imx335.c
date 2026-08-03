@@ -13,6 +13,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 
+#include <media/mipi-csi2.h>
 #include <media/v4l2-cci.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-fwnode.h>
@@ -217,6 +218,7 @@ struct imx335 {
 	struct mutex mutex;
 	unsigned long link_freq_bitmap;
 	u32 cur_mbus_code;
+	bool hot_attach;
 };
 
 static const char * const imx335_tpg_menu[] = {
@@ -608,6 +610,11 @@ static int imx335_get_format_code(struct imx335 *imx335, u32 code)
 {
 	unsigned int i;
 
+	/* Only support the current when hot attached */
+	if (imx335->hot_attach)
+		return imx335->cur_mbus_code;
+
+
 	for (i = 0; i < ARRAY_SIZE(imx335_mbus_codes); i++) {
 		if (imx335_mbus_codes[i] == code)
 			return imx335_mbus_codes[i];
@@ -628,10 +635,20 @@ static int imx335_enum_mbus_code(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
-	if (code->index >= ARRAY_SIZE(imx335_mbus_codes))
-		return -EINVAL;
+	struct imx335 *imx335 = to_imx335(sd);
 
-	code->code = imx335_mbus_codes[code->index];
+	/* Only support the current in hot attach */
+	if (imx335->hot_attach) {
+		if (code->index > 0 )
+			return -EINVAL;
+		else
+			code->code = imx335->cur_mbus_code;
+	} else {
+		if (code->index >= ARRAY_SIZE(imx335_mbus_codes))
+			return -EINVAL;
+
+		code->code = imx335_mbus_codes[code->index];
+	}
 
 	return 0;
 }
@@ -650,6 +667,10 @@ static int imx335_enum_frame_size(struct v4l2_subdev *sd,
 {
 	struct imx335 *imx335 = to_imx335(sd);
 	u32 code;
+
+	/* Only support the current in hot attach */
+	if ((imx335->hot_attach) && (fsize->index > 0))
+		return -EINVAL;
 
 	if (fsize->index > ARRAY_SIZE(imx335_mbus_codes))
 		return -EINVAL;
@@ -736,9 +757,11 @@ static int imx335_set_pad_format(struct v4l2_subdev *sd,
 	mutex_lock(&imx335->mutex);
 
 	mode = &supported_mode;
-	for (i = 0; i < ARRAY_SIZE(imx335_mbus_codes); i++) {
-		if (imx335_mbus_codes[i] == fmt->format.code)
-			imx335->cur_mbus_code = imx335_mbus_codes[i];
+	if (!imx335->hot_attach) {
+		for (i = 0; i < ARRAY_SIZE(imx335_mbus_codes); i++) {
+			if (imx335_mbus_codes[i] == fmt->format.code)
+				imx335->cur_mbus_code = imx335_mbus_codes[i];
+		}
 	}
 
 	imx335_fill_pad_format(imx335, mode, fmt);
@@ -837,6 +860,39 @@ static int imx335_set_framefmt(struct imx335 *imx335)
 	return -EINVAL;
 }
 
+static int imx335_read_back_controls(struct imx335 *imx335)
+{
+	u64 vmax_val, shutter_val, gain_val;
+	u32 lpfr, exposure;
+	int ret;
+
+	ret = cci_read(imx335->cci, IMX335_REG_VMAX, &vmax_val, NULL);
+	if (ret)
+		return ret;
+
+	ret = cci_read(imx335->cci, IMX335_REG_SHUTTER, &shutter_val, NULL);
+	if (ret)
+		return ret;
+
+	ret = cci_read(imx335->cci, IMX335_REG_GAIN, &gain_val, NULL);
+	if (ret)
+		return ret;
+
+	lpfr = (u32)vmax_val;
+	exposure = lpfr - (u32)shutter_val;
+	imx335->vblank = lpfr - imx335->cur_mode->height;
+
+	dev_dbg(imx335->dev,
+		"hot-attach readback: vmax=%u shutter=%llu gain=%llu exposure=%u\n",
+		lpfr, shutter_val, gain_val, exposure);
+
+	__v4l2_ctrl_s_ctrl(imx335->vblank_ctrl, imx335->vblank);
+	__v4l2_ctrl_s_ctrl(imx335->exp_ctrl, exposure);
+	__v4l2_ctrl_s_ctrl(imx335->again_ctrl, (u32)gain_val);
+
+	return 0;
+}
+
 /**
  * imx335_start_streaming() - Start sensor stream
  * @imx335: pointer to imx335 device
@@ -847,6 +903,26 @@ static int imx335_start_streaming(struct imx335 *imx335)
 {
 	const struct imx335_reg_list *reg_list;
 	int ret;
+
+	if (imx335->hot_attach) {
+		ret = imx335_read_back_controls(imx335);
+		if (ret)
+			dev_warn(imx335->dev,
+				 "hot-attach: failed to read back controls: %d\n",
+				 ret);
+
+		/* Toggle standby to re-assert LP-11 for DPHY sync */
+		ret = cci_write(imx335->cci, IMX335_REG_MODE_SELECT,
+				IMX335_MODE_STANDBY, NULL);
+		dev_info(imx335->dev, "hot-attach: standby toggle (%d)\n", ret);
+		msleep(50);
+		ret = cci_write(imx335->cci, IMX335_REG_MODE_SELECT,
+				IMX335_MODE_STREAMING, NULL);
+		dev_info(imx335->dev, "hot-attach: streaming resume (%d)\n", ret);
+		msleep(50);
+
+		return 0;
+	}
 
 	/* Setup PLL */
 	reg_list = &link_freq_reglist[__ffs(imx335->link_freq_bitmap)];
@@ -908,6 +984,10 @@ static int imx335_start_streaming(struct imx335 *imx335)
  */
 static int imx335_stop_streaming(struct imx335 *imx335)
 {
+	/* Never abruptly stop streaming since others might be viewing */
+	if (imx335->hot_attach)
+		return 0;
+
 	return cci_write(imx335->cci, IMX335_REG_MODE_SELECT,
 			 IMX335_MODE_STANDBY, NULL);
 }
@@ -962,6 +1042,9 @@ static int imx335_detect(struct imx335 *imx335)
 	int ret;
 	u64 val;
 
+	if (imx335->hot_attach)
+		return 0;
+
 	ret = cci_read(imx335->cci, IMX335_REG_ID, &val, NULL);
 	if (ret)
 		return ret;
@@ -995,6 +1078,11 @@ static int imx335_parse_hw_config(struct imx335 *imx335)
 	if (!fwnode)
 		return -ENXIO;
 
+	imx335->hot_attach = device_property_present(imx335->dev,
+						     "sony,hot-attach");
+	if (imx335->hot_attach)
+		dev_info(imx335->dev, "hot-attach mode: sensor assumed already streaming\n");
+
 	/* Request optional reset pin */
 	imx335->reset_gpio = devm_gpiod_get_optional(imx335->dev, "reset",
 						     GPIOD_OUT_HIGH);
@@ -1004,28 +1092,33 @@ static int imx335_parse_hw_config(struct imx335 *imx335)
 		return PTR_ERR(imx335->reset_gpio);
 	}
 
-	for (i = 0; i < ARRAY_SIZE(imx335_supply_name); i++)
-		imx335->supplies[i].supply = imx335_supply_name[i];
+	if (!imx335->hot_attach) {
+		for (i = 0; i < ARRAY_SIZE(imx335_supply_name); i++)
+			imx335->supplies[i].supply = imx335_supply_name[i];
 
-	ret = devm_regulator_bulk_get(imx335->dev,
-				      ARRAY_SIZE(imx335_supply_name),
-				      imx335->supplies);
-	if (ret) {
-		dev_err(imx335->dev, "Failed to get regulators\n");
-		return ret;
-	}
+		ret = devm_regulator_bulk_get(imx335->dev,
+					      ARRAY_SIZE(imx335_supply_name),
+					      imx335->supplies);
+		if (ret) {
+			dev_err(imx335->dev, "Failed to get regulators\n");
+			return ret;
+		}
 
-	/* Get sensor input clock */
-	imx335->inclk = devm_clk_get(imx335->dev, NULL);
-	if (IS_ERR(imx335->inclk)) {
-		dev_err(imx335->dev, "could not get inclk\n");
-		return PTR_ERR(imx335->inclk);
-	}
+		imx335->inclk = devm_clk_get(imx335->dev, NULL);
+		if (IS_ERR(imx335->inclk)) {
+			dev_err(imx335->dev, "could not get inclk\n");
+			return PTR_ERR(imx335->inclk);
+		}
 
-	rate = clk_get_rate(imx335->inclk);
-	if (rate != IMX335_INCLK_RATE) {
-		dev_err(imx335->dev, "inclk frequency mismatch\n");
-		return -EINVAL;
+		rate = clk_get_rate(imx335->inclk);
+		if (rate != IMX335_INCLK_RATE) {
+			dev_err(imx335->dev, "inclk frequency mismatch\n");
+			return -EINVAL;
+		}
+	} else {
+		imx335->inclk = devm_clk_get_optional(imx335->dev, NULL);
+		if (IS_ERR(imx335->inclk))
+			imx335->inclk = NULL;
 	}
 
 	ep = fwnode_graph_get_next_endpoint(fwnode, NULL);
@@ -1070,6 +1163,42 @@ static const struct v4l2_subdev_video_ops imx335_video_ops = {
 	.s_stream = imx335_set_stream,
 };
 
+static int imx335_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
+         struct v4l2_mbus_frame_desc *fd)
+{
+	struct imx335 *imx335 = to_imx335(sd);
+	u32 code;
+	u8 dt;
+
+	if (pad != 0)
+	return -EINVAL;
+
+	mutex_lock(&imx335->mutex);
+	code = imx335->cur_mbus_code;
+	mutex_unlock(&imx335->mutex);
+
+	switch (code) {
+		case MEDIA_BUS_FMT_SRGGB10_1X10:
+			dt = MIPI_CSI2_DT_RAW10;
+			break;
+		case MEDIA_BUS_FMT_SRGGB12_1X12:
+			dt = MIPI_CSI2_DT_RAW12;
+			break;
+		default:
+			return -EINVAL;
+	}
+
+	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_CSI2;
+	fd->num_entries = 1;
+
+	fd->entry[0].pixelcode = code;
+	fd->entry[0].stream = 0;
+	fd->entry[0].bus.csi2.vc = 0;
+	fd->entry[0].bus.csi2.dt = dt;
+
+	return 0;
+}
+
 static const struct v4l2_subdev_pad_ops imx335_pad_ops = {
 	.enum_mbus_code = imx335_enum_mbus_code,
 	.enum_frame_size = imx335_enum_frame_size,
@@ -1077,6 +1206,7 @@ static const struct v4l2_subdev_pad_ops imx335_pad_ops = {
 	.set_selection = imx335_get_selection,
 	.get_fmt = imx335_get_pad_format,
 	.set_fmt = imx335_set_pad_format,
+	.get_frame_desc = imx335_get_frame_desc,
 };
 
 static const struct v4l2_subdev_ops imx335_subdev_ops = {
@@ -1099,6 +1229,9 @@ static int imx335_power_on(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx335 *imx335 = to_imx335(sd);
 	int ret;
+
+	if (imx335->hot_attach)
+		return 0;
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(imx335_supply_name),
 				    imx335->supplies);
@@ -1139,6 +1272,9 @@ static int imx335_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx335 *imx335 = to_imx335(sd);
+
+	if (imx335->hot_attach)
+		return 0;
 
 	gpiod_set_value_cansleep(imx335->reset_gpio, 1);
 	clk_disable_unprepare(imx335->inclk);
@@ -1302,8 +1438,18 @@ static int imx335_probe(struct i2c_client *client)
 
 	/* Set default mode to max resolution */
 	imx335->cur_mode = &supported_mode;
-	imx335->cur_mbus_code = imx335_mbus_codes[0];
 	imx335->vblank = imx335->cur_mode->vblank;
+
+	{
+		u32 pixel_fmt = 12;
+
+		device_property_read_u32(imx335->dev, "sony,default-pixel-format",
+					&pixel_fmt);
+		if (pixel_fmt == 10)
+			imx335->cur_mbus_code = MEDIA_BUS_FMT_SRGGB10_1X10;
+		else
+			imx335->cur_mbus_code = MEDIA_BUS_FMT_SRGGB12_1X12;
+	}
 
 	ret = imx335_init_controls(imx335);
 	if (ret) {
